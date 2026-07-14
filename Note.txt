@@ -1,0 +1,84 @@
+# Cách làm dự án Data Siege
+
+## A. Chuẩn bị và nguyên tắc làm việc
+
+1. Đọc `README.md`, `RULES.md`, `docs/TOOLKIT_API.md` và
+   `docs/FAULT_PILLARS.md`; ghi lại API, giá và ngưỡng baseline trước khi sửa
+   `solution/defense.py`.
+2. Chỉ đưa logic phát hiện vào `solution/defense.py`. Tài liệu học ở thư mục
+   gốc không phải nội dung nộp; khi nộp chỉ stage `solution/` và `submission/`.
+3. Không đọc key/schedule, không hard-code `event_id`, không gọi tool ngoài
+   bảng API. Đây là lỗi bị loại bài, không phải một cách tối ưu hóa.
+4. Không dùng `print()` trong defense. Nếu cần quan sát cục bộ, ghi stderr;
+   xóa debug không cần thiết trước lượt private.
+
+## B. Thiết kế `defense.py`
+
+1. Giữ `from api import Verdict` và để `register(ctx)` đăng ký đủ năm handler:
+   `data_batch`, `contract_checkpoint`, `lineage_run`,
+   `feature_materialization`, `embedding_batch`.
+2. Mỗi handler theo cùng một khung:
+   - Lấy đúng mã tham chiếu từ `payload` như sườn file đã chỉ ra.
+   - Gọi đúng một tool tương ứng; lưu kết quả vào biến cục bộ.
+   - Nếu kết quả có `error`, trả `Verdict(alert=False, reason=..., pillar=...)`
+     an toàn, không đọc tiếp các khóa khác.
+   - Tính các điều kiện, gộp chúng bằng `any`/điểm rủi ro, rồi trả Verdict có
+     `reason` ngắn gọn và `pillar` chuẩn.
+3. Chỉ dùng `ctx.state` cho dữ liệu của lần chạy: ví dụ đếm số event theo loại,
+   lưu cửa sổ metric hoặc cache kết quả theo ref. Không cache giữa các lần chạy
+   và không cache làm bỏ qua kiểm tra của event hiện tại.
+
+## C. Ma trận kiểm tra ban đầu
+
+| Handler | Tool / chi phí | Điều kiện hard gate theo baseline |
+|---|---:|---|
+| `check_data_batch` | `batch_profile` / 1.0 | `row_count` ngoài min–max; `null_rate.customer_id` vượt max; `mean_amount` ngoài min–max; `staleness_min` vượt max |
+| `check_contract_checkpoint` | `contract_diff` / 1.5 | `violations` không rỗng hoặc `freshness_delay_min` vượt max |
+| `check_lineage_run` | `lineage_graph_slice` / 1.0 | `duration_ms` vượt max; đối chiếu upstream/downstream với kỳ vọng nếu payload có công bố kỳ vọng đó |
+| `check_feature_materialization` | `feature_drift` / 2.0 | `mean_shift_sigma` vượt max |
+| `check_embedding_batch` | `embedding_drift` / 2.0 | `centroid_shift` hoặc `avg_doc_age_days` vượt max |
+
+`reason` nên ghi metric đã vượt, ví dụ `"staleness vượt ngưỡng"`; không đưa
+đáp án, seed hay dữ liệu nội bộ vào reason.
+
+## D. Cải thiện cho lỗi tinh vi, sau khi hard gate đã đúng
+
+1. Không thay ngưỡng công khai một cách tùy tiện. Trước hết giữ hard gate để
+   bắt lỗi lớn với FPR thấp.
+2. Thêm soft signal chỉ khi có bằng chứng tổng quát: điểm gần ngưỡng ở nhiều
+   metric, xu hướng liên tiếp trong cửa sổ nhỏ, hoặc sai lệch vừa phải lặp lại.
+   Chỉ alert khi tổng bằng chứng vượt mức đã định.
+3. Nếu làm baseline động bằng `ctx.state`, dùng median/MAD hoặc một cửa sổ đã
+   lọc để giảm ảnh hưởng của outlier; luôn để baseline công khai là hàng rào
+   chính. Đừng học mọi event vào lịch sử vì event lỗi sẽ làm lệch ngưỡng.
+4. Với lineage, chỉ so sánh topology khi expectation xuất hiện rõ trong
+   payload; runtime lớn vẫn là tín hiệu độc lập. Với contract, `violations`
+   không rỗng là bằng chứng mạnh hơn một sai lệch thống kê.
+5. Gọi mỗi RPC tối đa một lần cho event và không gọi các tool không liên quan.
+   `spend_so_far()`/`budget_remaining()` miễn phí, có thể dùng để quan sát hay
+   kích hoạt fallback tiết kiệm khi gần cạn ngân sách.
+
+## E. Quy trình đánh giá theo pha
+
+1. Dùng self-check để bảo đảm import, `register(ctx)` và năm handler hợp lệ.
+2. Chạy practice theo hướng dẫn README. Lấy mảng `verdicts` trong report để
+   so với `phases/practice_answer_key.json` theo `seq`.
+3. Phân loại kết quả practice thành false positive, false negative và bắt đúng
+   theo từng pillar/tier. Chỉ sửa một giả thuyết tổng quát mỗi lượt, chẳng hạn
+   “cần kết hợp staleness và null-rate”, không tạo bảng id → verdict.
+4. Chạy public để xem dải `high`/`medium`/`low` theo pillar. Dùng nó để
+   phát hiện điểm mù lớn, không suy ngược số lỗi hoặc ngưỡng chính xác của
+   private.
+5. Khi logic ổn định, viết `solution/reflection.md` không quá một trang: lỗi
+   khó nhất, nguyên nhân và thay đổi mong muốn cho trade-off chi phí/coverage.
+6. Chỉ thực hiện lượt private khi đã chốt logic; giữ nguyên
+   `solution/private_report.json` có chữ ký từ lượt đó.
+
+## F. Hoàn tất submission
+
+1. Điền `submission/manifest.json`: tên người/nhóm và đúng ba đường dẫn hiện
+   có trong manifest (`defense.py`, `reflection.md`, `private_report.json`).
+2. Rà lại không có thay đổi bị cấm trong code nộp, không còn debug stdout và
+   report private là report đã ký.
+3. Theo `docs/SUBMIT.md`, chỉ commit/push `solution/` và `submission/`. Ba
+   tệp ghi chú này phục vụ học tập, không phải artefact được chấm.

@@ -1,0 +1,103 @@
+# Tổng quan dự án Data Siege — Student Kit
+
+## 1. Mục tiêu
+
+Đây là bài tập xây dựng một lớp phòng thủ cho data pipeline. Hệ thống gửi một
+luồng sự kiện xác định theo seed, từng sự kiện một và đúng thứ tự, vào
+`solution/defense.py`. Với mỗi sự kiện, chương trình phải quyết định `alert`
+(có lỗi) hoặc im lặng (không lỗi). Không có đáp án trong lúc xử lý và không
+được xem trước sự kiện tương lai.
+
+Mục tiêu chấm điểm là tối đa hóa điểm ở pha `private`; `practice` và `public`
+chỉ dùng để học và tinh chỉnh chiến lược tổng quát.
+
+## 2. Luồng xử lý
+
+`schedule mã hóa` → `harness/run.py` giải mã trong bộ nhớ → tiến trình cô lập
+chạy `solution/defense.py` → handler gọi công cụ RPC có tính phí → trả về
+`Verdict` → harness chấm điểm và ký báo cáo.
+
+Mỗi sự kiện chỉ được “reveal” ngay trước khi handler của nó chạy. Vì vậy không
+thể hỏi dữ liệu của sự kiện chưa đến qua API.
+
+## 3. Năm loại sự kiện và trụ cột lỗi
+
+| Sự kiện | Trụ cột | Công cụ cần gọi | Dấu hiệu chính |
+|---|---|---|---|
+| `data_batch` | `checks` | `batch_profile(batch_id)` — 1.0 credit | số dòng, null-rate, trung bình amount, độ lệch chuẩn, độ cũ dữ liệu |
+| `contract_checkpoint` | `contracts` | `contract_diff(contract_id, checkpoint_batch_id)` — 1.5 | vi phạm schema/type và chậm SLA/freshness |
+| `lineage_run` | `lineage` | `lineage_graph_slice(run_id)` — 1.0 | runtime bất thường, thiếu upstream, output mồ côi/sai số lượng downstream |
+| `feature_materialization` | `ai_infra` | `feature_drift(feature_view, ref)` — 2.0 | lệch phân phối train–serve của feature |
+| `embedding_batch` | `ai_infra` | `embedding_drift(corpus, ref)` — 2.0 | centroid embedding dịch chuyển, corpus cũ/stale |
+
+Giá trị trả về từ công cụ có thể là `{"error": "..."}` khi mã tham chiếu sai
+hoặc chưa được dispatch. Handler phải kiểm tra trường `error` trước khi đọc các
+trường dữ liệu khác.
+
+## 4. Baseline và ngưỡng công khai
+
+`data/baselines.json` chứa các ngưỡng đã hiệu chuẩn từ luồng sạch, xấp xỉ
+mean ± 3σ: `row_count_min/max`, `null_rate_max`, `mean_amount_min/max`,
+`staleness_min_max`, `freshness_delay_max_min`, `lineage_duration_ms_max`,
+`feature_mean_shift_sigma_max`, `embedding_centroid_shift_max` và
+`corpus_avg_doc_age_days_max`. Đây là hàng rào tốt cho lỗi lớn; lỗi tinh vi
+cần phối hợp nhiều tín hiệu hoặc thống kê theo chuỗi sự kiện.
+
+## 5. Giao diện cần hiện thực
+
+Tệp duy nhất chứa logic phát hiện là `solution/defense.py`. Hàm `register(ctx)`
+phải đăng ký handler cho cả năm event type. Mỗi handler nhận `(payload, ctx)`
+và trả về `api.Verdict(alert, confidence, reason, pillar)`.
+
+`ctx.tools` là gateway RPC có tính phí; chỉ bảy phương thức trong
+`docs/TOOLKIT_API.md` tồn tại. `ctx.baseline` là dict chứa các hằng số công
+khai. `ctx.state` là dict miễn phí, tồn tại suốt một lần chạy, phù hợp để đếm,
+lưu cửa sổ lịch sử hoặc cache kết quả trong lần chạy đó.
+
+## 6. Cách chấm điểm và ngân sách
+
+`score = 100 × (0.5 × TPR − 0.3 × FPR − 0.2 × min(cost_overage, 1))`.
+
+- TPR là tỷ lệ bắt đúng lỗi; FPR là tỷ lệ cảnh báo nhầm trên dữ liệu sạch.
+- Gọi tất cả đều alert làm FPR cao; không gọi công cụ làm TPR thấp; gọi dư công
+  cụ làm vượt ngân sách.
+- Ngân sách: `practice` 220, `public` 220, `private` 320 credits. Vượt ngân
+  sách không làm chương trình dừng nhưng bị phạt điểm.
+- `spend_so_far()` và `budget_remaining()` miễn phí; các công cụ còn lại tính
+  phí theo bảng ở mục 3.
+
+Ở public chỉ có score và dải bắt lỗi theo trụ cột (`high`/`medium`/`low`);
+private chỉ trả kết quả cuối cùng. Practice còn trả các verdict để đối chiếu
+với `phases/practice_answer_key.json`.
+
+## 7. Cấu trúc thư mục
+
+- `solution/`: `defense.py` (sườn bài), `reflection.md` (tối đa một trang) và
+  báo cáo pha chạy, đặc biệt `private_report.json`.
+- `submission/manifest.json`: điền người nộp và ba đường dẫn artefact nộp.
+- `data/baselines.json`: baseline công khai.
+- `harness/`: chương trình chạy, cô lập, toolkit tính phí, self-check, chấm
+  điểm, mã hóa schedule và ký báo cáo. Đọc để hiểu cơ chế là được; không được
+  truy cập từ `defense.py`.
+- `harness/child_env/api.py`: API phía bài làm gồm `Verdict`, `SiegeContext`
+  và `ToolkitProxy`.
+- `phases/`: key và schedule mã hóa của practice/public/private; practice có
+  thêm answer key để học. Không giải mã hoặc đọc chúng từ `defense.py`.
+- `docs/`: quy ước API, cách nộp và bốn nhóm fault.
+
+## 8. Ràng buộc quan trọng
+
+`defense.py` chạy trong child process bị hạn chế import và không có file I/O.
+Chỉ dùng `api`, một phần stdlib an toàn, `ctx.tools`, `ctx.baseline` và
+`ctx.state`. Không `print()` ra stdout vì stdout là kênh RPC; chỉ dùng stderr
+khi cần debug cục bộ. Không hard-code event id/đáp án, không gọi API ngoài bảng
+và không đọc key, schedule hay internals của harness từ logic bài làm.
+
+## 9. Artefact nộp và trình tự chính thức
+
+Artefact được chấm là `solution/defense.py`, `solution/reflection.md` và báo
+cáo private đã ký (`solution/private_report.json`); manifest phải trỏ đúng ba
+tệp này. Theo `docs/SUBMIT.md`: tự kiểm tra cấu trúc, chạy private khi được mở,
+điền manifest rồi chỉ stage/commit `solution/` và `submission/`.
+
+Ba tệp ghi chú ở thư mục gốc là tài liệu học cục bộ; không phải artefact nộp.

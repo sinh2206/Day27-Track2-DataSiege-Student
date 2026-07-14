@@ -1,0 +1,84 @@
+# Kiến thức cần có cho Data Siege
+
+## 1. Python trong môi trường bị cô lập
+
+- Hàm, dict, điều kiện, xử lý kết quả thiếu trường và thiết kế hàm thuần để mỗi
+  handler trả về đúng `Verdict`.
+- Dùng `ctx.state` làm trạng thái theo lần chạy: bộ đếm, cache và cửa sổ dữ
+  liệu. Không dùng file, biến trạng thái ngoài tiến trình hay mạng.
+- Chỉ import thư viện chuẩn được allowlist; đặc biệt `math`, `statistics`,
+  `collections` và `functools` có thể hữu ích. Không ghi stdout; debug cục bộ
+  chỉ qua `sys.stderr` nếu import hợp lệ.
+
+Tài liệu: [Python statistics](https://docs.python.org/3/library/statistics.html),
+[Python dataclasses](https://docs.python.org/3/library/dataclasses.html).
+
+## 2. Thống kê và phát hiện bất thường
+
+- Hiểu mean, standard deviation, z-score và ngưỡng hai phía/một phía. Baseline
+  của đề đã được tạo từ mean ± 3σ nên phù hợp làm hard gate cho sai lệch lớn.
+- Phân biệt ngưỡng độc lập với bằng chứng kết hợp: một sai lệch nhỏ có thể chưa
+  đủ tin cậy, nhưng nhiều tín hiệu cùng xấu thì đáng alert hơn.
+- Với lỗi gần vùng bình thường, dùng thống kê robust theo cửa sổ lịch sử (ví dụ
+  median/MAD hoặc tỷ lệ các điểm vượt nhẹ), nhưng phải có guard để không học
+  chính lỗi vào baseline tạm thời.
+- Luôn cân bằng false positive và false negative; không tối ưu ngưỡng theo id
+  hay đáp án của một schedule.
+
+Tài liệu: [Novelty và outlier detection — scikit-learn](https://scikit-learn.org/stable/modules/outlier_detection.html),
+[giải thích data drift — Evidently](https://docs.evidentlyai.com/metrics/explainer_drift).
+
+Video YouTube: [Data and prediction drift in ML — code practice](https://www.youtube.com/watch?index=14&list=PL9omX6impEuOpTezeRF-M04BW3VfnPBRF&v=oO1K4CaWxt0),
+[MLOps Zoomcamp: Introduction to ML monitoring](https://www.youtube.com/watch?list=PL3MmuxUbc_hIUISrluw_A7wDSmfOhErJK&v=SQ0jBwd_3kk),
+[MLOps Zoomcamp: Data quality monitoring](https://www.youtube.com/watch?index=43&list=PL3MmuxUbc_hIUISrluw_A7wDSmfOhErJK&v=fytrmPbcLhI).
+
+## 3. Data quality / observability cho `data_batch`
+
+Cần biết các chiều chất lượng dữ liệu: volume (số dòng), missingness (null),
+distribution/range (mean và độ phân tán) và freshness/staleness. Một kiểm tra
+schema đơn thuần không phát hiện hết lỗi ngữ nghĩa; phải kết hợp các chiều này.
+
+Tài liệu: [các use case data quality — Great Expectations](https://docs.greatexpectations.io/docs/reference/learn/data_quality_use_cases/dq_use_cases_lp/),
+[kiểm tra schema — Great Expectations](https://docs.greatexpectations.io/docs/reference/learn/data_quality_use_cases/schema/),
+[kiểm tra integrity — Great Expectations](https://docs.greatexpectations.io/docs/reference/learn/data_quality_use_cases/integrity/).
+
+## 4. Data contract cho `contract_checkpoint`
+
+Data contract là thỏa thuận có thể kiểm tra được giữa bên phát dữ liệu và bên
+tiêu thụ: schema, kiểu dữ liệu, chất lượng, owner và SLA/freshness. Trong bài,
+vi phạm schema/type và quá hạn freshness đều là tín hiệu độc lập cần xem xét.
+
+Tài liệu: [Open Data Contract Standard (ODCS)](https://bitol-io.github.io/open-data-contract-standard/latest/),
+[Data contracts: khái niệm và vai trò](https://biocloud-core-69944c.gitlab.io/data_contracts/).
+
+## 5. Data lineage cho `lineage_run`
+
+Lineage ghi nhận quan hệ input → job/run → output. Cần hiểu cách phát hiện
+runtime bất thường, cạnh upstream bị thiếu và số downstream không khớp với kỳ
+vọng do payload mô tả. Khi đối chiếu, chỉ dùng các trường thật sự xuất hiện ở
+payload/API; không suy đoán schema ẩn.
+
+Tài liệu: [OpenLineage — giới thiệu và core model](https://openlineage.io/docs/).
+
+## 6. MLOps và AI infrastructure
+
+- Feature drift / training-serving skew: so sánh distribution feature ở lúc
+  serve với reference train; trong bài có sẵn `mean_shift_sigma`.
+- Embedding/RAG drift: centroid đổi nhiều có thể báo corpus/ngữ nghĩa thay đổi;
+  `avg_doc_age_days` cho biết tri thức nguồn đã cũ.
+- Drift là tín hiệu rủi ro, không đồng nghĩa chắc chắn model hỏng; ngưỡng cần
+  được chọn theo chi phí cảnh báo nhầm và tín hiệu kèm theo.
+
+Tài liệu: [Evidently: data và ML checks](https://docs.evidentlyai.com/quickstart_ml),
+[monitoring NLP/text drift](https://www.evidentlyai.com/blog/tutorial-detecting-drift-in-text-data),
+[khóa ML observability miễn phí của Evidently](https://learn.evidentlyai.com/ml-observability-course/).
+
+## 7. Đánh giá bộ phát hiện có ràng buộc chi phí
+
+Cần nắm TPR/recall, FPR và cost-sensitive decision. Trong Data Siege, tăng TPR
+không bù được việc alert mọi thứ (FPR tăng) hoặc gọi RPC lặp lại (vượt budget).
+Chiến lược tốt là gọi đúng một công cụ liên quan cho một event, tái sử dụng kết
+quả trong event/lần chạy và chỉ mở rộng thống kê miễn phí bằng `ctx.state`.
+
+Tài liệu nội bộ bắt buộc đọc trước khi code: `README.md`, `RULES.md`,
+`docs/TOOLKIT_API.md`, `docs/FAULT_PILLARS.md` và `docs/SUBMIT.md`.
